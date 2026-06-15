@@ -4,7 +4,7 @@
 
 **assert.sh** is test-driven development in the Bourne again shell.
 
-:Version: 1.1
+:Version: 1.2
 :Author: Robert Lehmann
 :License: LGPLv3
 
@@ -86,7 +86,7 @@ Installation
 
 You can easily install the latest release (or any other version)::
 
-  wget https://raw.github.com/lehmannro/assert.sh/v1.1/assert.sh
+  wget https://raw.github.com/lehmannro/assert.sh/v1.2/assert.sh
 
 Use the following command to grab a snapshot of the current development
 version::
@@ -168,8 +168,60 @@ variable          corresponding option
 ``$CONTINUE``     ``--continue``
 ================= ====================
 
+Internal architecture
+---------------------
+
+Starting with version 1.2 the framework internals are organized into clearly
+separated layers.  Each layer has a single responsibility, and the public API
+functions (``assert``, ``assert_raises``, ``assert_end``, ``skip``,
+``skip_if``) compose them without crossing boundaries:
+
+=========================== ===================================================
+layer                       helpers
+=========================== ===================================================
+State management            ``_assert_reset``, ``_timestamp``
+Command execution           ``_run_capture_stdout``, ``_run_capture_exitcode``
+Formatting (pure)           ``_format_value``, ``_flatten_multiline``,
+                            ``_format_failure_report``, ``_format_elapsed_time``
+Result recording            ``_debug_tick``, ``_record_failure``
+Suite lifecycle / exit      ``assert_end``, ``_assert_cleanup`` trap
+=========================== ===================================================
+
+*State management* owns all mutable counters (``tests_ran``, ``tests_failed``,
+``tests_errors``) and the timing baseline.  *Command execution* isolates
+``eval`` and subshell side-effects so the rest of the code never touches raw
+command strings.  *Formatting helpers* are pure: they take values in and
+return display strings without reading or writing global state.  *Result
+recording* is the single funnel through which every test outcome passes —
+both ``assert()`` and ``assert_raises()`` call ``_record_failure`` for
+failures and ``_debug_tick`` for verbose progress.  *Suite lifecycle*
+handles ``assert_end`` reporting and the ``EXIT`` trap that sets the process
+exit code.
+
+This separation means that adding a new assertion type (or tweaking how
+failures are reported) touches one or two helpers instead of every public
+function.
+
 Changelog
 =========
+
+1.2
+  * Internal refactoring: separated runner logic into clearly named
+    layers — state management (``_assert_reset``, ``_timestamp``),
+    command execution (``_run_capture_stdout``,
+    ``_run_capture_exitcode``), formatting helpers
+    (``_format_value``, ``_flatten_multiline``,
+    ``_format_failure_report``, ``_format_elapsed_time``), and a
+    single result-recording funnel (``_record_failure``,
+    ``_debug_tick``) shared by ``assert()`` and
+    ``assert_raises()``.
+  * Fixed ``--discover`` in ``set -e`` environments: all internal
+    return paths now yield exit code 0 so the framework no longer
+    aborts the host script when collecting tests.
+  * Public API (``assert``, ``assert_raises``, ``assert_end``,
+    ``skip``, ``skip_if``) and all command-line options are
+    unchanged.
+  * Added regression tests for every internal helper.
 
 1.1
   * Added ``skip`` and ``skip_if`` commands.

@@ -162,3 +162,76 @@ assert '_clean DEBUG=1 INVARIANT=; tests_starttime="0N"; assert_end' \
        '\nall 0 tests passed in 123.000s.'
 unset -f date  # bring back original date
 assert_end regression
+
+# ============================================================
+# Tests for refactored internal helpers
+# ============================================================
+
+# -- _format_value: empty input becomes "nothing"
+assert "_format_value ''" "nothing"
+# -- _format_value: non-empty input gets quoted
+assert "_format_value hello" '"hello"'
+# -- _format_value: strings with spaces get quoted
+assert "_format_value 'hello world'" '"hello world"'
+
+# -- _flatten_multiline: single line is unchanged
+assert "_flatten_multiline 'hello'" "hello"
+# -- _flatten_multiline: newlines become literal \n
+assert "_flatten_multiline 'line1
+line2'" 'line1\\nline2'
+# -- _flatten_multiline: three lines
+assert "_flatten_multiline 'a
+b
+c'" 'a\\nb\\nc'
+
+# -- _format_failure_report: without stdin (set tests_ran for predictability)
+assert "tests_ran=42; _format_failure_report 'oops' 'echo test'" \
+       "test #42 \"echo test\" failed:$(printf '\n\t')oops"
+# -- _format_failure_report: with stdin
+assert "tests_ran=7; _format_failure_report 'oops' 'cat' 'input'" \
+       "test #7 \"cat <<< input\" failed:$(printf '\n\t')oops"
+
+# -- _format_elapsed_time: basic 1-second duration (raw ns values)
+assert "_format_elapsed_time 1000000000 2000000000" " in 1.000s"
+# -- _format_elapsed_time: sub-second precision
+assert "_format_elapsed_time 1000000000 1500000000" " in 0.500s"
+# -- _format_elapsed_time: zero duration
+assert "_format_elapsed_time 5000000000 5000000000" " in 0.000s"
+
+# -- _run_capture_stdout: captures stdout correctly
+assert "_run_capture_stdout 'echo hello'; echo \$_run_output" "hello"
+# -- _run_capture_stdout: captures multiline stdout (quote to preserve newlines)
+assert "_run_capture_stdout 'seq 3'; echo \"\$_run_output\"" "1\n2\n3"
+# -- _run_capture_stdout: suppresses stderr
+assert "_run_capture_stdout 'echo err >&2'; echo \$_run_output" ""
+# -- _run_capture_stdout: passes stdin
+assert "_run_capture_stdout 'cat' 'hello'; echo \$_run_output" "hello"
+
+# -- _run_capture_exitcode: success returns 0
+assert "_run_capture_exitcode 'true'; echo \$_run_status" "0"
+# -- _run_capture_exitcode: failure returns correct code
+assert "_run_capture_exitcode 'exit 42'; echo \$_run_status" "42"
+# -- _run_capture_exitcode: suppresses stdout
+assert "_run_capture_exitcode 'echo hello'; echo \$_run_status" "0"
+
+# -- _record_failure: increments tests_failed counter
+assert "_clean; _record_failure 'msg' 'cmd'; echo \$tests_failed" "1"
+# -- _record_failure: appends to tests_errors array (quote to preserve newlines)
+assert "_clean; _record_failure 'msg' 'cmd'; echo \"\${tests_errors[0]}\"" \
+       "test #0 \"cmd\" failed:$(printf '\n\t')msg"
+# -- _record_failure: multiple failures accumulate
+assert "_clean; _record_failure 'a' 'c1'; _record_failure 'b' 'c2'; echo \$tests_failed" "2"
+
+# -- _debug_tick: silent without DEBUG
+assert "_clean; _debug_tick '.'" ""
+# -- _debug_tick: emits character with DEBUG
+assert "_clean DEBUG=1; _debug_tick '.'" "."
+
+# -- _assert_reset: resets all counters cleanly
+assert "_clean; tests_ran=5; tests_failed=3; _assert_reset; echo \$tests_ran \$tests_failed" "0 0"
+
+# -- return values are always 0 (set -e safety)
+assert "_clean DISCOVERONLY=1; assert true; echo ok" "ok"
+assert "_clean DISCOVERONLY=1; assert_raises true; echo ok" "ok"
+
+assert_end internals
