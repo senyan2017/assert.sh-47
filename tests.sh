@@ -19,7 +19,7 @@ assert_end demo
 _clean() {
     _assert_reset # reset state
     DEBUG= STOP= INVARIANT=1 DISCOVERONLY= CONTINUE= # reset flags
-    eval $* # read new flags
+    eval "$@" # read new flags
 }
 
 # clean output
@@ -161,4 +161,48 @@ date() {         # date mock
 assert '_clean DEBUG=1 INVARIANT=; tests_starttime="0N"; assert_end' \
        '\nall 0 tests passed in 123.000s.'
 unset -f date  # bring back original date
+
+# --- quoting / special-character edge cases (issue: eval $1 breaks quoting) ---
+# spaces preserved inside command string
+assert "echo 'hello   world'" "hello   world"
+# double quotes inside command string
+assert 'echo "hello world"' "hello world"
+# dollar-sign variable expansion still works through eval
+assert 'echo $((1 + 2))' "3"
+# literal dollar sign (escaped) survives
+assert 'printf "%s" "cost is \$5"' 'cost is $5'
+# wildcard characters are not glob-expanded by accident
+assert "echo '*'" "*"
+# backtick / command substitution
+assert 'echo `echo nested`' "nested"
+# multi-line stdin
+assert "cat" $'line1\nline2' $'line1\nline2'
+# stdin with embedded special characters
+assert "cat" 'hello $world `cmd` "quotes"' 'hello $world `cmd` "quotes"'
+# empty stdin (no third argument) vs empty string stdin
+assert "echo hello" "hello"
+# assert_raises with non-zero exit and stdin
+assert_raises 'read x; test "$x" = "ok"' 0 "ok"
+assert_raises 'read x; test "$x" = "ok"' 1 "no"
+# history expansion character (!) should not cause errors
+assert 'echo "hello!"' "hello!"
+# skip_if with complex quoted command
+assert "_clean; skip_if 'bash -c \"exit 1\"'; assert 'echo ok' 'ok'; assert_end" \
+    "all 1 tests passed."
+# skip_if with pipe in command
+assert "_clean; skip_if 'echo foo | grep bar'; assert 'echo ok' 'ok'; assert_end" \
+    "all 1 tests passed."
+# set -u does not blow up
+assert_raises "_clean; set -u; assert 'echo 1' '1'; assert_end" 0
+# set -e does not blow up
+assert_raises "_clean; set -e; assert 'echo 1' '1'; assert_end" 0
+# nested suite with flags does not leak
+assert "_clean; bash -c '. assert.sh; assert \"echo x\" x; assert_end nested' '' --invariant" \
+    "all 1 nested tests passed."
+# command with semicolons and mixed quoting
+assert "echo 'a'; echo 'b'" "a\nb"
+# assert_raises: command returning non-zero with no stdin
+assert_raises "false" 1
+# empty expected vs empty result (both sides)
+assert "true" ""
 assert_end regression

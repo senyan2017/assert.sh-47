@@ -1,4 +1,7 @@
 #!/bin/bash
+# Disable history expansion to prevent errors in interactive shells
+[[ $- == *i* ]] && set +H
+
 # assert.sh 1.1 - bash unit testing framework
 # Copyright (C) 2009-2015 Robert Lehmann
 #
@@ -24,7 +27,7 @@ export INVARIANT=${INVARIANT:-}
 export CONTINUE=${CONTINUE:-}
 
 args="$(getopt -n "$0" -l \
-    verbose,help,stop,discover,invariant,continue vhxdic $*)" \
+    verbose,help,stop,discover,invariant,continue vhxdic "$@")" \
 || exit -1
 for arg in $args; do
     case "$arg" in
@@ -101,31 +104,33 @@ assert_end() {
 assert() {
     # assert <command> <expected stdout> [stdin]
     (( tests_ran++ )) || :
-    [[ -z "$DISCOVERONLY" ]] || return
+    [[ -z "$DISCOVERONLY" ]] || return 0
     expected=$(echo -ne "${2:-}")
-    result="$(eval 2>/dev/null $1 <<< ${3:-})" || true
+    local cmd="$1"
+    result="$(printf '%s\n' "${3:-}" | (eval "$cmd") 2>/dev/null)" || true
     if [[ "$result" == "$expected" ]]; then
         [[ -z "$DEBUG" ]] || echo -n .
         return
     fi
     result="$(sed -e :a -e '$!N;s/\n/\\n/;ta' <<< "$result")"
     [[ -z "$result" ]] && result="nothing" || result="\"$result\""
-    [[ -z "$2" ]] && expected="nothing" || expected="\"$2\""
-    _assert_fail "expected $expected${_indent}got $result" "$1" "$3"
+    [[ -z "${2:-}" ]] && expected="nothing" || expected="\"$2\""
+    _assert_fail "expected $expected${_indent}got $result" "$1" "${3:-}"
 }
 
 assert_raises() {
     # assert_raises <command> <expected code> [stdin]
     (( tests_ran++ )) || :
-    [[ -z "$DISCOVERONLY" ]] || return
+    [[ -z "$DISCOVERONLY" ]] || return 0
     status=0
-    (eval $1 <<< ${3:-}) > /dev/null 2>&1 || status=$?
+    local cmd="$1"
+    (printf '%s\n' "${3:-}" | (eval "$cmd")) > /dev/null 2>&1 || status=$?
     expected=${2:-0}
     if [[ "$status" -eq "$expected" ]]; then
         [[ -z "$DEBUG" ]] || echo -n .
         return
     fi
-    _assert_fail "program terminated with code $status instead of $expected" "$1" "$3"
+    _assert_fail "program terminated with code $status instead of $expected" "$1" "${3:-}"
 }
 
 _assert_fail() {
@@ -143,7 +148,7 @@ _assert_fail() {
 
 skip_if() {
     # skip_if <command ..>
-    (eval $@) > /dev/null 2>&1 && status=0 || status=$?
+    (eval "$*") > /dev/null 2>&1 && status=0 || status=$?
     [[ "$status" -eq 0 ]] || return
     skip
 }
