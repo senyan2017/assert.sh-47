@@ -162,3 +162,75 @@ assert '_clean DEBUG=1 INVARIANT=; tests_starttime="0N"; assert_end' \
        '\nall 0 tests passed in 123.000s.'
 unset -f date  # bring back original date
 assert_end regression
+
+# assert_stderr checks stderr directly (stdout and exit code are ignored)
+assert "_clean; assert_stderr 'echo oops >&2' 'oops'; assert_end" \
+"all 1 tests passed."
+# stdout produced alongside stderr is ignored by assert_stderr
+assert "_clean; assert_stderr 'echo out; echo oops >&2' 'oops'; assert_end" \
+"all 1 tests passed."
+# empty stderr is the default expectation
+assert "_clean; assert_stderr true; assert_end" "all 1 tests passed."
+# a stderr mismatch is reported as such
+assert "_clean; assert_stderr 'echo boom >&2' 'bang'; assert_end" \
+'test #1 "echo boom >&2" failed:\n\tstderr mismatch: expected "bang"\n\tgot "boom"\n1 of 1 tests failed.'
+# unexpected stderr output is reported against "nothing"
+assert "_clean; assert_stderr 'echo x >&2'; assert_end" \
+'test #1 "echo x >&2" failed:\n\tstderr mismatch: expected nothing\n\tgot "x"\n1 of 1 tests failed.'
+# multi-line stderr is collapsed for the report just like stdout
+assert "_clean; assert_stderr 'seq 2 >&2' 'zzz'; assert_end" \
+'test #1 "seq 2 >&2" failed:\n\tstderr mismatch: expected "zzz"\n\tgot "1\\n2"\n1 of 1 tests failed.'
+
+# assert_stdout_stderr checks stdout and stderr together
+assert "_clean; assert_stdout_stderr 'echo out; echo err >&2' 'out' 'err'; assert_end" \
+"all 1 tests passed."
+# real scenario: a command that succeeds but warns on stderr
+assert "_clean; assert_stdout_stderr 'echo done; echo warn >&2' 'done' 'warn'; assert_end" \
+"all 1 tests passed."
+# only the mismatching stream is reported
+assert "_clean; assert_stdout_stderr 'echo no; echo err >&2' 'yes' 'err'; assert_end" \
+'test #1 "echo no; echo err >&2" failed:\n\tstdout mismatch: expected "yes"\n\tgot "no"\n1 of 1 tests failed.'
+# both streams can fail and both are reported
+assert "_clean; assert_stdout_stderr 'echo a; echo b >&2' 'x' 'y'; assert_end" \
+'test #1 "echo a; echo b >&2" failed:\n\tstdout mismatch: expected "x"\n\tgot "a"\n\tstderr mismatch: expected "y"\n\tgot "b"\n1 of 1 tests failed.'
+# stdin is forwarded and shown in the report
+assert "_clean; assert_stdout_stderr 'cat' 'bye' '' 'hi'; assert_end" \
+'test #1 "cat <<< hi" failed:\n\tstdout mismatch: expected "bye"\n\tgot "hi"\n1 of 1 tests failed.'
+
+# assert_raises_stderr checks the exit code and stderr together
+assert "_clean; assert_raises_stderr 'echo e >&2; exit 3' 3 'e'; assert_end" \
+"all 1 tests passed."
+# real scenario: a command that fails and prints usage on stderr
+assert "_clean; assert_raises_stderr 'echo usage >&2; exit 2' 2 'usage'; assert_end" \
+"all 1 tests passed."
+# a wrong exit code alone is reported
+assert "_clean; assert_raises_stderr 'echo e >&2; exit 1' 2 'e'; assert_end" \
+'test #1 "echo e >&2; exit 1" failed:\n\tprogram terminated with code 1 instead of 2\n1 of 1 tests failed.'
+# wrong code and wrong stderr are reported together
+assert "_clean; assert_raises_stderr 'echo b >&2; exit 1' 2 'y'; assert_end" \
+'test #1 "echo b >&2; exit 1" failed:\n\tprogram terminated with code 1 instead of 2\n\tstderr mismatch: expected "y"\n\tgot "b"\n1 of 1 tests failed.'
+assert_end stderr
+
+# old and new assertions mix in a single passing suite
+assert "_clean;
+assert true; assert_stderr 'echo e >&2' 'e';
+assert_stdout_stderr 'echo o; echo e >&2' 'o' 'e';
+assert_raises_stderr 'echo e >&2; exit 2' 2 'e'; assert_raises false 1;
+assert_end" "all 5 tests passed."
+# old and new failures are collected together, in order
+assert "_clean; assert_raises false; assert_stdout_stderr 'echo a' 'b'; assert_end" \
+'test #1 "false" failed:\n\tprogram terminated with code 1 instead of 0\ntest #2 "echo a" failed:\n\tstdout mismatch: expected "b"\n\tgot "a"\n2 of 2 tests failed.'
+# verbose (-v) prints progress markers for new assertions too
+assert "_clean DEBUG=1;
+assert true; assert_stderr 'echo e >&2' 'e'; assert_stdout_stderr 'echo a' 'b';
+assert_end" \
+'..X\ntest #3 "echo a" failed:\n\tstdout mismatch: expected "b"\n\tgot "a"\n1 of 3 tests failed.'
+# discover (-d) counts new assertions without running them
+assert "_clean DISCOVERONLY=1;
+assert true; assert_stderr a b; assert_stdout_stderr c d e;
+assert_raises_stderr f 1 g; assert_end" "collected 4 tests."
+# stop (-x) halts on the first failing new assertion
+assert "_clean STOP=1; assert_stdout_stderr 'echo a' 'b'; assert_stdout_stderr true;
+assert_end" \
+'test #1 "echo a" failed:\n\tstdout mismatch: expected "b"\n\tgot "a"'
+assert_end extended_interaction

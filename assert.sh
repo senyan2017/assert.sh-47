@@ -1,5 +1,5 @@
 #!/bin/bash
-# assert.sh 1.1 - bash unit testing framework
+# assert.sh 1.2 - bash unit testing framework
 # Copyright (C) 2009-2015 Robert Lehmann
 #
 # http://github.com/lehmannro/assert.sh
@@ -126,6 +126,103 @@ assert_raises() {
         return
     fi
     _assert_fail "program terminated with code $status instead of $expected" "$1" "$3"
+}
+
+_assert_format_value() {
+    # _assert_format_value <var_name> <value>
+    local val="$2"
+    val="$(sed -e :a -e '$!N;s/\n/\\n/;ta' <<< "$val")"
+    [[ -z "$val" ]] && val="nothing" || val="\"$val\""
+    printf -v "$1" '%s' "$val"
+}
+
+assert_stderr() {
+    # assert_stderr <command> <expected stderr> [stdin]
+    (( tests_ran++ )) || :
+    [[ -z "$DISCOVERONLY" ]] || return
+    local stderr_file; stderr_file="$(mktemp)"
+    local expected; expected=$(echo -ne "${2:-}")
+    local result; result="$(eval $1 2>"$stderr_file" <<< ${3:-})" || true
+    local actual_stderr; actual_stderr="$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    if [[ "$actual_stderr" == "$expected" ]]; then
+        [[ -z "$DEBUG" ]] || echo -n .
+        return
+    fi
+    _assert_format_value result_fmt "$actual_stderr"
+    [[ -z "$2" ]] && expected_fmt="nothing" || expected_fmt="\"$2\""
+    _assert_fail "stderr mismatch: expected $expected_fmt${_indent}got $result_fmt" "$1" "$3"
+}
+
+assert_stdout_stderr() {
+    # assert_stdout_stderr <command> <expected stdout> <expected stderr> [stdin]
+    (( tests_ran++ )) || :
+    [[ -z "$DISCOVERONLY" ]] || return
+    local stderr_file; stderr_file="$(mktemp)"
+    local expected_stdout; expected_stdout=$(echo -ne "${2:-}")
+    local expected_stderr; expected_stderr=$(echo -ne "${3:-}")
+    local result; result="$(eval $1 2>"$stderr_file" <<< ${4:-})" || true
+    local actual_stderr; actual_stderr="$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    local stdout_ok=1 stderr_ok=1
+    [[ "$result" == "$expected_stdout" ]] || stdout_ok=0
+    [[ "$actual_stderr" == "$expected_stderr" ]] || stderr_ok=0
+    if [[ $stdout_ok -eq 1 && $stderr_ok -eq 1 ]]; then
+        [[ -z "$DEBUG" ]] || echo -n .
+        return
+    fi
+    local failure_parts=()
+    if [[ $stdout_ok -eq 0 ]]; then
+        _assert_format_value got_fmt "$result"
+        [[ -z "$2" ]] && exp_fmt="nothing" || exp_fmt="\"$2\""
+        failure_parts+=("stdout mismatch: expected $exp_fmt${_indent}got $got_fmt")
+    fi
+    if [[ $stderr_ok -eq 0 ]]; then
+        _assert_format_value got_fmt "$actual_stderr"
+        [[ -z "$3" ]] && exp_fmt="nothing" || exp_fmt="\"$3\""
+        failure_parts+=("stderr mismatch: expected $exp_fmt${_indent}got $got_fmt")
+    fi
+    local failure_msg="${failure_parts[0]}"
+    local i
+    for (( i=1; i<${#failure_parts[@]}; i++ )); do
+        failure_msg="$failure_msg${_indent}${failure_parts[$i]}"
+    done
+    _assert_fail "$failure_msg" "$1" "$4"
+}
+
+assert_raises_stderr() {
+    # assert_raises_stderr <command> <expected code> <expected stderr> [stdin]
+    (( tests_ran++ )) || :
+    [[ -z "$DISCOVERONLY" ]] || return
+    local stderr_file; stderr_file="$(mktemp)"
+    local status=0
+    (eval $1 <<< ${4:-}) > /dev/null 2>"$stderr_file" || status=$?
+    local expected_code=${2:-0}
+    local expected_stderr; expected_stderr=$(echo -ne "${3:-}")
+    local actual_stderr; actual_stderr="$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    local code_ok=1 stderr_ok=1
+    [[ "$status" -eq "$expected_code" ]] || code_ok=0
+    [[ "$actual_stderr" == "$expected_stderr" ]] || stderr_ok=0
+    if [[ $code_ok -eq 1 && $stderr_ok -eq 1 ]]; then
+        [[ -z "$DEBUG" ]] || echo -n .
+        return
+    fi
+    local failure_parts=()
+    if [[ $code_ok -eq 0 ]]; then
+        failure_parts+=("program terminated with code $status instead of $expected_code")
+    fi
+    if [[ $stderr_ok -eq 0 ]]; then
+        _assert_format_value got_fmt "$actual_stderr"
+        [[ -z "$3" ]] && exp_fmt="nothing" || exp_fmt="\"$3\""
+        failure_parts+=("stderr mismatch: expected $exp_fmt${_indent}got $got_fmt")
+    fi
+    local failure_msg="${failure_parts[0]}"
+    local i
+    for (( i=1; i<${#failure_parts[@]}; i++ )); do
+        failure_msg="$failure_msg${_indent}${failure_parts[$i]}"
+    done
+    _assert_fail "$failure_msg" "$1" "$4"
 }
 
 _assert_fail() {

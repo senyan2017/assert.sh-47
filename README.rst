@@ -4,7 +4,7 @@
 
 **assert.sh** is test-driven development in the Bourne again shell.
 
-:Version: 1.1
+:Version: 1.2
 :Author: Robert Lehmann
 :License: LGPLv3
 
@@ -60,16 +60,88 @@ The overall status code is 1 (except if you modified the exit code manually)::
   $ echo $?
   1
 
+Testing stderr and exit codes
+=============================
+
+When testing CLI tools, error messages usually go to stderr and failures
+are indicated by non-zero exit codes. *assert.sh* provides dedicated
+assertions for these scenarios.
+
+Basic stderr assertion
+----------------------
+
+::
+
+  . assert.sh
+
+  # assert stderr contains "warning: deprecated"
+  assert_stderr "myapp --legacy" "warning: deprecated"
+  # assert stderr is empty on success
+  assert_stderr "myapp --quiet" ""
+  # assert both stdout and stderr
+  assert_stdout_stderr "myapp --verbose" "OK" "info: starting"
+  # assert exit code AND stderr together
+  assert_raises_stderr "myapp --invalid-flag" 2 "error: unknown option"
+  assert_end stderr_basics
+
+Real-world CLI testing patterns
+-------------------------------
+
+**Command fails with usage hint** -- many CLI tools print a usage message
+to stderr and exit non-zero when given bad arguments::
+
+  # your CLI tool prints usage to stderr and exits with code 2
+  assert_raises_stderr "myapp --bogus" 2 "Usage: myapp [options]"
+
+**Command succeeds but emits a warning** -- the command exits cleanly but
+you want to verify a warning was printed to stderr::
+
+  # exits 0, stdout is "OK", stderr has a deprecation notice
+  assert_stdout_stderr "myapp --old-flag" "OK" "warning: --old-flag is deprecated"
+
+**Permission denied** -- test that a command fails with the right error
+message and exit code::
+
+  assert_raises_stderr "myapp --write /root/secret" 1 \
+      "error: permission denied: /root/secret"
+
+**Multi-line error output** -- stderr often contains multi-line messages
+such as stack traces or validation errors::
+
+  assert_stderr "myapp validate bad.json" \
+      "error: invalid JSON\\n  at line 3, column 5"
+
+**Mixing stdout, stderr and exit code assertions** -- all assertion types
+work together seamlessly within the same test suite::
+
+  assert "myapp version" "1.0.0"
+  assert_stderr "myapp --deprecated" "warning: use --new-flag"
+  assert_raises "myapp --crash" 1
+  assert_raises_stderr "myapp --bad-arg" 2 "error: bad argument"
+  assert_stdout_stderr "myapp run" "done" "info: 3 items processed"
+  assert_end integration
+
+Failure messages clearly indicate which stream didn't match::
+
+  test #1 "myapp run" failed:
+          stdout mismatch: expected "done"
+          got "error"
+          stderr mismatch: expected "info: 3 items processed"
+          got "fatal: disk full"
+  1 of 1 integration tests failed.
+
 Features
 ========
 
-+ lightweight interface: ``assert`` and ``assert_raises`` *only*
++ lightweight interface: ``assert``, ``assert_raises``, ``assert_stderr``,
+  ``assert_stdout_stderr`` and ``assert_raises_stderr``
 + minimal setup -- source ``assert.sh`` and you're done
 + test grouping in individual suites
 + time benchmarks with real-time display of test progress
 + run all tests, stop on first failure, or collect numbers only
 + automatically set the exit status of the test script
 + skip individual tests
++ clear failure messages distinguishing stdout, stderr and exit code mismatches
 
 Use case
 ========
@@ -86,7 +158,7 @@ Installation
 
 You can easily install the latest release (or any other version)::
 
-  wget https://raw.github.com/lehmannro/assert.sh/v1.1/assert.sh
+  wget https://raw.github.com/lehmannro/assert.sh/v1.2/assert.sh
 
 Use the following command to grab a snapshot of the current development
 version::
@@ -122,6 +194,22 @@ Reference
 
   Verify `command` terminated with the expected status code. The default
   `exitcode` is assumed to be 0.
+
++ ``assert_stderr <command> [expected_stderr] [stdin]``
+
+  Check for expected content on stderr when running your command. Stdout is
+  ignored. Supports the same escape sequences as ``assert`` (eg. ``\\n``).
+  The default expected stderr is assumed to be empty.
+
++ ``assert_stdout_stderr <command> [expected_stdout] [expected_stderr] [stdin]``
+
+  Check both stdout and stderr in a single assertion. Failure messages
+  clearly indicate which stream didn't match. Both defaults are empty.
+
++ ``assert_raises_stderr <command> [exitcode] [expected_stderr] [stdin]``
+
+  Verify both the exit code and stderr content. Useful for testing error
+  paths of CLI tools. Defaults: exitcode 0, stderr empty.
 
 + ``assert_end [suite]``
 
@@ -170,6 +258,14 @@ variable          corresponding option
 
 Changelog
 =========
+
+1.2
+  * Added ``assert_stderr`` for direct stderr assertions.
+  * Added ``assert_stdout_stderr`` for combined stdout+stderr assertions.
+  * Added ``assert_raises_stderr`` for exit code + stderr assertions.
+  * Failure messages now clearly distinguish stdout, stderr and exit code
+    mismatches.
+  * Temp files are automatically cleaned up on exit.
 
 1.1
   * Added ``skip`` and ``skip_if`` commands.
