@@ -60,10 +60,51 @@ The overall status code is 1 (except if you modified the exit code manually)::
   $ echo $?
   1
 
+Standard error and exit codes
+=============================
+
+Real command-line tools report problems on ``stderr`` and signal them through
+their exit code.  ``assert_stderr`` asserts `stderr` on its own and
+``assert_output`` asserts `stdout`, `stderr`, and the exit code together, so you
+no longer have to hand-roll ``2>&1`` redirections to test the error paths::
+
+  . assert.sh
+
+  # a command that succeeds but prints a warning on stderr
+  assert_output "echo built; echo 'warning: deprecated flag' >&2" \
+                "built" "warning: deprecated flag" 0
+  # a command that fails: nothing on stdout, a usage message on stderr, code 64
+  assert_output "echo 'usage: mytool [-v] FILE' >&2; exit 64" \
+                "" "usage: mytool [-v] FILE" 64
+  # only interested in stderr? assert it on its own
+  assert_stderr "echo 'permission denied' >&2" "permission denied"
+  # stderr is expected to be empty unless you say otherwise
+  assert_stderr "echo hello"
+  assert_end cli
+
+When an expectation is not met, ``assert_output`` reports exactly which stream
+-- or the exit code -- went wrong instead of leaving you to guess.  This::
+
+  # we expected "ready" on stdout and a clean exit
+  assert_output "echo 'usage: mytool FILE' >&2; exit 64" "ready" "" 0
+
+produces::
+
+  test #1 "echo 'usage: mytool FILE' >&2; exit 64" failed:
+          stdout: expected "ready"
+          got nothing
+          stderr: expected nothing
+          got "usage: mytool FILE"
+          exit code: expected 0
+          got 64
+  1 of 1 cli tests failed.
+
 Features
 ========
 
-+ lightweight interface: ``assert`` and ``assert_raises`` *only*
++ lightweight interface: ``assert``, ``assert_raises``, ``assert_stderr``, and
+  ``assert_output``
++ first-class ``stdout``, ``stderr``, and exit-code checks for command-line tools
 + minimal setup -- source ``assert.sh`` and you're done
 + test grouping in individual suites
 + time benchmarks with real-time display of test progress
@@ -123,6 +164,21 @@ Reference
   Verify `command` terminated with the expected status code. The default
   `exitcode` is assumed to be 0.
 
++ ``assert_stderr <command> [stderr] [stdin]``
+
+  Check for an expected `stderr` when running your command, disregarding
+  `stdout`. `stderr` supports the same ``echo -e`` control sequences as
+  `assert`'s `stdout`. The default `stderr` is assumed to be empty.
+
++ ``assert_output <command> [stdout] [stderr] [exitcode] [stdin]``
+
+  Check `stdout`, `stderr`, and the exit code of `command` in a single
+  assertion -- convenient for the usual command-line combinations such as a
+  warning printed alongside successful output, or a usage message on a
+  non-zero exit. Each argument defaults exactly as in the single-purpose
+  assertions (`stdout` and `stderr` empty, `exitcode` 0); the failure report
+  names every dimension (`stdout`, `stderr`, or exit code) that did not match.
+
 + ``assert_end [suite]``
 
   Finalize a test suite and print statistics.
@@ -170,6 +226,12 @@ variable          corresponding option
 
 Changelog
 =========
+
+Unreleased
+  * Added ``assert_stderr`` to assert a command's standard error directly,
+    without ``2>&1`` redirection plumbing.
+  * Added ``assert_output`` to assert ``stdout``, ``stderr``, and the exit code
+    in a single call, with failure reports that pinpoint the mismatching stream.
 
 1.1
   * Added ``skip`` and ``skip_if`` commands.

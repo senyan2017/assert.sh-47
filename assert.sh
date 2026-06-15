@@ -128,6 +128,77 @@ assert_raises() {
     _assert_fail "program terminated with code $status instead of $expected" "$1" "$3"
 }
 
+_assert_run() {
+    # _assert_run <command> [stdin]
+    # run <command> and capture its stdout, stderr and exit status into the
+    # globals _run_stdout, _run_stderr and _run_status respectively.
+    local errfile
+    errfile="$(mktemp 2>/dev/null)" || errfile="${TMPDIR:-/tmp}/assert.sh.$$.$RANDOM"
+    _run_status=0
+    _run_stdout="$(eval "$1" 2>"$errfile" <<< "${2:-}")" || _run_status=$?
+    _run_stderr="$(cat "$errfile" 2>/dev/null)" || :
+    rm -f "$errfile"
+}
+
+_assert_encode() {
+    # _assert_encode <value>
+    # collapse newlines to literal "\n" and quote a *captured* value, or render
+    # an empty value as "nothing" (matching assert's stdout formatting.)
+    local value
+    value="$(sed -e :a -e '$!N;s/\n/\\n/;ta' <<< "$1")"
+    [[ -z "$value" ]] && printf 'nothing' || printf '"%s"' "$value"
+}
+
+_assert_quote() {
+    # _assert_quote <expected>
+    # quote an *expected* value as the user wrote it, or render an empty value
+    # as "nothing".
+    [[ -z "$1" ]] && printf 'nothing' || printf '"%s"' "$1"
+}
+
+assert_stderr() {
+    # assert_stderr <command> <expected stderr> [stdin]
+    (( tests_ran++ )) || :
+    [[ -z "$DISCOVERONLY" ]] || return
+    local expected
+    expected=$(echo -ne "${2:-}")
+    _assert_run "$1" "${3:-}"
+    if [[ "$_run_stderr" == "$expected" ]]; then
+        [[ -z "$DEBUG" ]] || echo -n .
+        return
+    fi
+    _assert_fail \
+        "stderr: expected $(_assert_quote "${2:-}")${_indent}got $(_assert_encode "$_run_stderr")" \
+        "$1" "$3"
+}
+
+assert_output() {
+    # assert_output <command> [expected stdout] [expected stderr] [exitcode] [stdin]
+    (( tests_ran++ )) || :
+    [[ -z "$DISCOVERONLY" ]] || return
+    local exp_out exp_err exp_code
+    exp_out=$(echo -ne "${2:-}")
+    exp_err=$(echo -ne "${3:-}")
+    exp_code=${4:-0}
+    _assert_run "$1" "${5:-}"
+    local failures=()
+    [[ "$_run_stdout" == "$exp_out" ]] \
+        || failures+=("stdout: expected $(_assert_quote "${2:-}")${_indent}got $(_assert_encode "$_run_stdout")")
+    [[ "$_run_stderr" == "$exp_err" ]] \
+        || failures+=("stderr: expected $(_assert_quote "${3:-}")${_indent}got $(_assert_encode "$_run_stderr")")
+    [[ "$_run_status" -eq "$exp_code" ]] \
+        || failures+=("exit code: expected $exp_code${_indent}got $_run_status")
+    if [[ ${#failures[@]} -eq 0 ]]; then
+        [[ -z "$DEBUG" ]] || echo -n .
+        return
+    fi
+    local message="${failures[0]}" i
+    for (( i = 1; i < ${#failures[@]}; i++ )); do
+        message="$message${_indent}${failures[$i]}"
+    done
+    _assert_fail "$message" "$1" "$5"
+}
+
 _assert_fail() {
     # _assert_fail <failure> <command> <stdin>
     [[ -n "$DEBUG" ]] && echo -n X
