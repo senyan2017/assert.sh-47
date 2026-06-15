@@ -162,3 +162,59 @@ assert '_clean DEBUG=1 INVARIANT=; tests_starttime="0N"; assert_end' \
        '\nall 0 tests passed in 123.000s.'
 unset -f date  # bring back original date
 assert_end regression
+
+# --- robustness: quoting, argument forwarding, set -u, interactive noise ---
+
+# quoting: significant whitespace inside a command must survive.  The command
+# is evaluated as one string; it must not be word-split and rejoined (which
+# would silently collapse the three spaces in "a   b" down to one).
+assert 'echo "a   b"' "a   b"
+# quoting: a single-quoted glob/dollar is data, not to be expanded
+assert "printf %s 'a*b'" 'a*b'
+assert "printf %s '\$PATH'" '$PATH'
+# quoting: spaces, runs of spaces, newlines and dollar signs in stdin are fed
+# to the command verbatim (the here-string must stay quoted)
+assert "cat" "a b c" "a b c"
+assert "cat" "x   y" "x   y"
+assert "cat" 'a\nb' "a
+b"
+assert "cat" '$x' '$x'
+# a multi-line command (semicolon/newline separated) still works when quoted
+assert 'echo a;
+echo "b   c"' "a\nb   c"
+
+# argument forwarding: options reach a *sourced* assert.sh, and operands after
+# a "--" terminator are NOT mistaken for options (no flag/operand bleed-through,
+# even when nested or sourced from another script)
+assert "bash -c '. assert.sh; assert true; assert_end fwd' '<exec>' --invariant -- --discover" \
+"all 1 fwd tests passed."
+assert "bash -c '. assert.sh; assert true; assert true; assert_end fwd' '<exec>' --invariant --discover" \
+"collected 2 fwd tests."
+# sourcing must not clobber the caller's own positional parameters
+assert "INVARIANT=1 bash -c 'set -- keep1 keep2; . assert.sh; assert_end p; echo \$1 \$2' '<exec>'" \
+"all 0 p tests passed.
+keep1 keep2"
+
+# skip_if: complex conditions must not be mangled by eval.  Collapsing the
+# significant double spaces (the pre-fix behaviour) would flip this comparison
+# from false to true and wrongly skip the test below.
+assert "_clean; skip_if '[ \"a   b\" = \"a b\" ]'; assert_raises true; assert_end" \
+"all 1 tests passed."
+assert "_clean; skip_if '[ \"a   b\" = \"a   b\" ]'; assert_raises true; assert_end" \
+"all 0 tests passed."
+
+# set -u: a failing assert must not trip over unbound positional parameters
+# when the optional expected-output and/or stdin arguments are omitted, and a
+# command that exits non-zero must still be reported rather than crash
+assert_raises "_clean; set -u; assert 'echo x' 'y'; assert_end" 0
+assert_raises "_clean; set -u; assert 'echo x'; assert_end" 0
+assert_raises "_clean; set -u; assert_raises 'exit 3' 0; assert_end" 0
+
+# interactive history expansion is silenced: sourcing assert.sh turns it off so
+# a literal '!' in a command or expected output is treated verbatim instead of
+# spraying "<word>: event not found" noise over otherwise passing tests
+assert "echo 'a!b'" "a!b"
+assert_raises "set -H 2>/dev/null; . ./assert.sh; set -o | grep -q '^histexpand.*on'" 1
+assert_raises "bash -ic '. ./assert.sh; assert \"echo done\" done; assert_end' 2>&1 | grep -q 'event not found'" 1
+
+assert_end robustness
