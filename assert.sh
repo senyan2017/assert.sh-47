@@ -61,7 +61,25 @@ EOF
     esac
 done
 
-_indent=$'\n\t' # local format helper
+# --- module constants ------------------------------------------------------
+# Verbose-mode (-v) progress markers, one character per test case.  Naming
+# them keeps the "what gets printed" decision out of the control flow below.
+_assert_mark_pass="."   # the test case matched its expectation
+_assert_mark_fail="X"   # the test case failed
+_assert_mark_skip="s"   # the test case was skipped
+# Indentation prefix (newline + tab) for the diagnostic line of a failure.
+_assert_indent=$'\n\t'
+
+# --- suite state (lifecycle) -----------------------------------------------
+# Every per-suite counter lives here.  Nothing else creates or clears these;
+# the recording helpers mutate them and _assert_reset wipes them between
+# suites.  Concentrating the state in one place is what keeps nested suites,
+# --continue and --discover from leaking results into one another.
+#
+#   tests_ran        number of test cases registered in the current suite
+#   tests_failed     how many of those failed
+#   tests_errors     rendered failure reports, in the order they happened
+#   tests_starttime  suite start timestamp (nanoseconds since the epoch)
 
 _assert_reset() {
     tests_ran=0
@@ -70,68 +88,95 @@ _assert_reset() {
     tests_starttime="$(date +%s%N)" # nanoseconds_since_epoch
 }
 
-assert_end() {
-    # assert_end [suite ..]
-    tests_endtime="$(date +%s%N)"
-    # required visible decimal place for seconds (leading zeros if needed)
-    local tests_time="$( \
-        printf "%010d" "$(( ${tests_endtime/%N/000000000} 
-                            - ${tests_starttime/%N/000000000} ))")"  # in ns
-    tests="$tests_ran ${*:+$* }tests"
-    [[ -n "$DISCOVERONLY" ]] && echo "collected $tests." && _assert_reset && return
-    [[ -n "$DEBUG" ]] && echo
-    # to get report_time split tests_time on 2 substrings:
-    #   ${tests_time:0:${#tests_time}-9} - seconds
-    #   ${tests_time:${#tests_time}-9:3} - milliseconds
-    [[ -z "$INVARIANT" ]] \
-        && report_time=" in ${tests_time:0:${#tests_time}-9}.${tests_time:${#tests_time}-9:3}s" \
-        || report_time=
+# --- command execution -----------------------------------------------------
+# The only two places a tested command is evaluated.  Both run inside the
+# caller's command-substitution subshell, so any environment or option the
+# command changes is confined there and never leaks back into the suite.
 
-    if [[ "$tests_failed" -eq 0 ]]; then
-        echo "all $tests passed$report_time."
-    else
-        for error in "${tests_errors[@]}"; do echo "$error"; done
-        echo "$tests_failed of $tests failed$report_time."
-    fi
-    tests_failed_previous=$tests_failed
-    [[ $tests_failed -gt 0 ]] && tests_suite_status=1
-    _assert_reset
+_assert_eval_stdout() {
+    # _assert_eval_stdout <command> [stdin]
+    # Echo the command's stdout.  Its stderr is discarded unless the command
+    # redirects it explicitly (e.g. "cmd 2>&1").
+    eval 2>/dev/null $1 <<< ${2:-}
 }
 
-assert() {
-    # assert <command> <expected stdout> [stdin]
+_assert_eval_status() {
+    # _assert_eval_status <command> [stdin]
+    # Run the command with its output discarded and propagate its exit status
+    # as our own return value.  The command runs in a subshell so anything it
+    # changes (variables, shell options) is confined there.  Crucially we do
+    # *not* wrap this in a command substitution: callers capture the status
+    # with `|| status=$?` so the errexit state the command observes is the
+    # suite's own, not a command substitution's (which always disables it).
+    (eval $1 <<< ${2:-}) > /dev/null 2>&1
+}
+
+# --- report rendering ------------------------------------------------------
+# Pure helpers: they read their arguments and echo a string, never touching
+# suite state.  Centralising the formatting here is what stops every
+# assertion from hand-rolling its own "nothing"/quoting/timing strings.
+
+_assert_quote() {
+    # _assert_quote <value>
+    # "nothing" when the value is empty, otherwise the value in double quotes.
+    [[ -z "$1" ]] && echo -n "nothing" || echo -n "\"$1\""
+}
+
+_assert_oneline() {
+    # _assert_oneline <value>
+    # Collapse embedded newlines into literal "\n" so a multi-line capture
+    # still prints on a single report line.
+    sed -e :a -e '$!N;s/\n/\\n/;ta' <<< "$1"
+}
+
+_assert_suite_label() {
+    # _assert_suite_label <count> [suite ..]
+    # The "<count> [suite ]tests" fragment shared by every suite summary.
+    local count="$1"; shift
+    echo -n "$count ${*:+$* }tests"
+}
+
+_assert_duration() {
+    # _assert_duration <start_ns> <end_ns>
+    # The runtime suffix " in S.MMMs"; empty when --invariant is in effect.
+    [[ -n "$INVARIANT" ]] && return
+    # Subtract, tolerating platforms whose date(1) lacks %N support: the
+    # trailing literal "N" is rewritten to nine zeroes so arithmetic works.
+    local elapsed
+    elapsed="$(printf "%010d" "$(( ${2/%N/000000000} - ${1/%N/000000000} ))")"
+    # Split the nanosecond count into seconds and milliseconds for display.
+    echo -n " in ${elapsed:0:${#elapsed}-9}.${elapsed:${#elapsed}-9:3}s"
+}
+
+_assert_format_report() {
+    # _assert_format_report <command> <stdin> <diagnostic>
+    # The canonical failure line for the current test number.
+    echo -n "test #$tests_ran \"$1${2:+ <<< $2}\" failed:${_assert_indent}$3"
+}
+
+# --- result recording ------------------------------------------------------
+# The bridge between execution and rendering.  These own every mutation of
+# the suite counters and decide what (if anything) is printed for one case.
+
+_assert_register_test() {
+    # Count the upcoming test case.  Returns non-zero in --discover mode so
+    # the caller collects the case without ever running it.
     (( tests_ran++ )) || :
-    [[ -z "$DISCOVERONLY" ]] || return
-    expected=$(echo -ne "${2:-}")
-    result="$(eval 2>/dev/null $1 <<< ${3:-})" || true
-    if [[ "$result" == "$expected" ]]; then
-        [[ -z "$DEBUG" ]] || echo -n .
-        return
-    fi
-    result="$(sed -e :a -e '$!N;s/\n/\\n/;ta' <<< "$result")"
-    [[ -z "$result" ]] && result="nothing" || result="\"$result\""
-    [[ -z "$2" ]] && expected="nothing" || expected="\"$2\""
-    _assert_fail "expected $expected${_indent}got $result" "$1" "$3"
+    [[ -z "$DISCOVERONLY" ]]
 }
 
-assert_raises() {
-    # assert_raises <command> <expected code> [stdin]
-    (( tests_ran++ )) || :
-    [[ -z "$DISCOVERONLY" ]] || return
-    status=0
-    (eval $1 <<< ${3:-}) > /dev/null 2>&1 || status=$?
-    expected=${2:-0}
-    if [[ "$status" -eq "$expected" ]]; then
-        [[ -z "$DEBUG" ]] || echo -n .
-        return
-    fi
-    _assert_fail "program terminated with code $status instead of $expected" "$1" "$3"
+_assert_record_pass() {
+    # The current test case matched its expectation.
+    [[ -z "$DEBUG" ]] || echo -n "$_assert_mark_pass"
 }
 
-_assert_fail() {
-    # _assert_fail <failure> <command> <stdin>
-    [[ -n "$DEBUG" ]] && echo -n X
-    report="test #$tests_ran \"$2${3:+ <<< $3}\" failed:${_indent}$1"
+_assert_record_failure() {
+    # _assert_record_failure <command> <stdin> <diagnostic>
+    # The current test case failed: emit the marker, render the report and
+    # either stop right away (-x) or stash it for the suite summary.
+    [[ -n "$DEBUG" ]] && echo -n "$_assert_mark_fail"
+    local report
+    report="$(_assert_format_report "$1" "$2" "$3")"
     if [[ -n "$STOP" ]]; then
         [[ -n "$DEBUG" ]] && echo
         echo "$report"
@@ -141,8 +186,46 @@ _assert_fail() {
     (( tests_failed++ )) || :
 }
 
+# --- public assertions -----------------------------------------------------
+
+assert() {
+    # assert <command> [expected stdout] [stdin]
+    _assert_register_test || return
+    local expected output
+    expected="$(echo -ne "${2:-}")"
+    output="$(_assert_eval_stdout "$1" "${3:-}")" || true
+    if [[ "$output" == "$expected" ]]; then
+        _assert_record_pass
+        return
+    fi
+    _assert_record_failure "$1" "${3:-}" \
+        "expected $(_assert_quote "${2:-}")${_assert_indent}got $(_assert_quote "$(_assert_oneline "$output")")"
+}
+
+assert_raises() {
+    # assert_raises <command> [expected exit code] [stdin]
+    _assert_register_test || return
+    local expected="${2:-0}"
+    local status=0
+    _assert_eval_status "$1" "${3:-}" || status=$?
+    if [[ "$status" -eq "$expected" ]]; then
+        _assert_record_pass
+        return
+    fi
+    _assert_record_failure "$1" "${3:-}" \
+        "program terminated with code $status instead of $expected"
+}
+
+# --- skip support ----------------------------------------------------------
+# skip / skip_if cause the *next* test case to be passed over entirely -- it
+# is never executed and therefore never counted.  This relies on a DEBUG
+# trap under `extdebug`; the shell options touched here are saved and later
+# restored by _skip so the suite environment is left exactly as it was.
+
 skip_if() {
     # skip_if <command ..>
+    # Skip the next test case if <command> succeeds.
+    local status
     (eval $@) > /dev/null 2>&1 && status=0 || status=$?
     [[ "$status" -eq 0 ]] || return
     skip
@@ -159,13 +242,14 @@ skip() {
     tests_trapped=0
     trap _skip DEBUG
 }
+
 _skip() {
     if [[ $tests_trapped -eq 0 ]]; then
-        # DEBUG trap for command we want to skip.  Do not remove the handler
-        # yet because *after* the command we need to reset extdebug/errexit (in
-        # another DEBUG trap.)
+        # DEBUG trap for the command we want to skip.  Do not remove the
+        # handler yet: *after* the command we still need to reset the
+        # extdebug/errexit options (in another DEBUG trap.)
         tests_trapped=1
-        [[ -z "$DEBUG" ]] || echo -n s
+        [[ -z "$DEBUG" ]] || echo -n "$_assert_mark_skip"
         return 1
     else
         trap - DEBUG
@@ -175,9 +259,42 @@ _skip() {
     fi
 }
 
+# --- suite finalization & exit code ----------------------------------------
+
+assert_end() {
+    # assert_end [suite ..]
+    # Close the current suite: print its summary, fold its outcome into the
+    # overall status, then reset state for the next suite.
+    tests_endtime="$(date +%s%N)"
+    local label report_time error
+    label="$(_assert_suite_label "$tests_ran" "$@")"
+
+    if [[ -n "$DISCOVERONLY" ]]; then
+        echo "collected $label."
+        _assert_reset
+        return
+    fi
+
+    [[ -n "$DEBUG" ]] && echo
+    report_time="$(_assert_duration "$tests_starttime" "$tests_endtime")"
+
+    if [[ "$tests_failed" -eq 0 ]]; then
+        echo "all $label passed$report_time."
+    else
+        for error in "${tests_errors[@]}"; do echo "$error"; done
+        echo "$tests_failed of $label failed$report_time."
+    fi
+
+    tests_failed_previous=$tests_failed
+    [[ $tests_failed -gt 0 ]] && tests_suite_status=1
+    _assert_reset
+}
+
+# --- bootstrap -------------------------------------------------------------
 
 _assert_reset
 : ${tests_suite_status:=0}  # remember if any of the tests failed so far
+
 _assert_cleanup() {
     local status=$?
     # modify exit code if it's not already non-zero
